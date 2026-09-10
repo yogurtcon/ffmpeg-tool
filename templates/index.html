@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FFmpeg 测试素材生成工具</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --card: #1a2332;
+      --border: #2d3a4d;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --danger: #f85149;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 24px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.35rem; font-weight: 600; margin: 0 0 8px; }
+    .sub { color: var(--muted); font-size: 0.875rem; margin-bottom: 24px; }
+    fieldset {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--card);
+      margin: 0 0 16px;
+      padding: 14px 16px 16px;
+    }
+    legend { padding: 0 8px; color: var(--muted); font-size: 0.8rem; }
+    label.row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0;
+      flex-wrap: wrap;
+    }
+    label.row input[type="radio"] { accent-color: var(--accent); }
+    select, input[type="number"], input[type="text"] {
+      background: #0d1117;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 8px 10px;
+      min-width: 160px;
+    }
+    input[type="file"] {
+      color: var(--muted);
+      max-width: 100%;
+    }
+    .grid2 {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 10px 12px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .grid2 label { color: var(--muted); font-size: 0.9rem; }
+    #specVideo.hidden, #specAudio.hidden, #fileRow.hidden { display: none !important; }
+    .btnRow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .btnRow .hidden { display: none !important; }
+    button#btnGen {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    button#btnGen:disabled { opacity: 0.5; cursor: not-allowed; }
+    #log {
+      width: 100%;
+      min-height: 220px;
+      margin-top: 12px;
+      padding: 12px;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: #c9d1d9;
+    }
+    .err { color: var(--danger); }
+    .hint { color: var(--muted); font-size: 0.85rem; }
+    a.dl {
+      display: inline-block;
+      padding: 10px 20px;
+      font-size: 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--accent);
+      color: var(--accent);
+      text-decoration: none;
+    }
+    a.dl:hover { background: rgba(61, 139, 253, 0.12); }
+  </style>
+</head>
+<body>
+  <h1>FFmpeg 测试素材生成工具</h1>
+
+  <form id="f" onsubmit="return false;">
+    <fieldset>
+      <legend>第一步 · 输入源</legend>
+      <label class="row">
+        <input type="radio" name="source_mode" value="local_file" /> 本地上传（支持常见音视频；是否含画面由工具自动检测）
+      </label>
+      <label class="row"><input type="radio" name="source_mode" value="generator" checked /> 无输入（由工具生成音/画）</label>
+      <div id="fileRow" class="hidden" style="margin-top:12px;">
+        <label class="row">选择文件 <input type="file" id="mediaFile" name="media_file" /></label>
+        <label class="row">
+          重复次数
+          <input type="number" id="inputRepeatCount" name="input_repeat_count" min="1" step="1" value="1" />
+          <span class="hint" id="repeatHint">1 表示不重复；大于 1 时按上传文件整段循环拼接。</span>
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>第二步 · 目标媒体类型</legend>
+      <label class="row"><input type="radio" name="target_kind" value="video" checked /> 视频</label>
+      <label class="row"><input type="radio" name="target_kind" value="audio" /> 音频</label>
+    </fieldset>
+
+    <fieldset id="specVideo">
+      <legend>第三步 · 视频规格</legend>
+      <div class="grid2">
+        <label for="resolution">分辨率</label>
+        <select id="resolution" name="resolution">
+          <option>4k</option><option>2k</option><option selected>1080p</option><option>720p</option>
+        </select>
+        <label for="container">封装格式</label>
+        <select id="container" name="container">
+          <option selected>.mp4</option><option>.mov</option>
+        </select>
+        <label for="orientation">横竖屏</label>
+        <select id="orientation" name="orientation">
+          <option value="landscape" selected>横屏</option>
+          <option value="portrait">竖屏</option>
+        </select>
+        <label for="durationVideo">时长（秒）</label>
+        <input type="number" id="durationVideo" name="duration_video" min="0.1" step="any" value="10" />
+      </div>
+    </fieldset>
+
+    <fieldset id="specAudio" class="hidden">
+      <legend>第三步 · 音频规格</legend>
+      <div class="grid2">
+        <label for="audio_format">封装格式</label>
+        <select id="audio_format" name="audio_format">
+          <option>MP3</option><option>AAC</option><option>FLAC</option><option>m4a</option><option>wav</option>
+        </select>
+        <label for="durationAudio">时长（秒）</label>
+        <input type="number" id="durationAudio" name="duration_audio" min="0.1" step="any" value="10" />
+      </div>
+    </fieldset>
+
+    <div class="btnRow">
+      <button type="button" id="btnGen">生成测试文件</button>
+      <a class="dl hidden" id="dl" href="#" target="_blank" rel="noopener noreferrer">下载刚生成的文件</a>
+    </div>
+    <pre id="log"></pre>
+  </form>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+    const fileRow = $("fileRow");
+    const specVideo = $("specVideo");
+    const specAudio = $("specAudio");
+    const dl = $("dl");
+    let localMediaDuration = 0;
+
+    function sourceMode() {
+      return document.querySelector('input[name="source_mode"]:checked').value;
+    }
+    function targetKind() {
+      return document.querySelector('input[name="target_kind"]:checked').value;
+    }
+
+    function repeatCount() {
+      const n = parseInt($("inputRepeatCount").value, 10);
+      return Number.isFinite(n) && n > 0 ? n : 1;
+    }
+
+    function setDurationValue(seconds) {
+      const value = String(Math.round(seconds * 1000) / 1000);
+      $("durationVideo").value = value;
+      $("durationAudio").value = value;
+    }
+
+    function syncRepeatHint() {
+      const n = repeatCount();
+      if (sourceMode() !== "local_file") return;
+      if (localMediaDuration > 0) {
+        const total = localMediaDuration * n;
+        $("repeatHint").textContent = `源时长约 ${localMediaDuration.toFixed(3)} 秒，重复 ${n} 次后约 ${total.toFixed(3)} 秒。`;
+        setDurationValue(total);
+      } else {
+        $("repeatHint").textContent = "1 表示不重复；大于 1 时按上传文件整段循环拼接。";
+      }
+    }
+
+    function syncSourceUI() {
+      const m = sourceMode();
+      if (m === "generator") {
+        fileRow.classList.add("hidden");
+        $("durationVideo").value = "5";
+        $("durationAudio").value = "5";
+      } else {
+        fileRow.classList.remove("hidden");
+        syncRepeatHint();
+      }
+    }
+
+    function syncTargetUI() {
+      const t = targetKind();
+      if (t === "video") {
+        specVideo.classList.remove("hidden");
+        specAudio.classList.add("hidden");
+      } else {
+        specVideo.classList.add("hidden");
+        specAudio.classList.remove("hidden");
+      }
+    }
+
+    document.querySelectorAll('input[name="source_mode"]').forEach((el) => {
+      el.addEventListener("change", syncSourceUI);
+    });
+    document.querySelectorAll('input[name="target_kind"]').forEach((el) => {
+      el.addEventListener("change", syncTargetUI);
+    });
+    $("inputRepeatCount").addEventListener("input", syncRepeatHint);
+    $("mediaFile").addEventListener("change", () => {
+      localMediaDuration = 0;
+      const file = $("mediaFile").files && $("mediaFile").files[0];
+      if (!file) {
+        syncRepeatHint();
+        return;
+      }
+      const probe = document.createElement(file.type.startsWith("audio/") ? "audio" : "video");
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => {
+        URL.revokeObjectURL(probe.src);
+        localMediaDuration = Number.isFinite(probe.duration) ? probe.duration : 0;
+        syncRepeatHint();
+      };
+      probe.onerror = () => {
+        URL.revokeObjectURL(probe.src);
+        syncRepeatHint();
+      };
+      probe.src = URL.createObjectURL(file);
+    });
+    syncSourceUI();
+    syncTargetUI();
+
+    $("btnGen").addEventListener("click", async () => {
+      const btn = $("btnGen");
+      const sm = sourceMode();
+      const tk = targetKind();
+      const fileInput = $("mediaFile");
+
+      if (sm === "local_file" && (!fileInput.files || !fileInput.files.length)) {
+        logEl.textContent = "请先选择要上传的本地文件。";
+        logEl.classList.add("err");
+        return;
+      }
+
+      let duration;
+      if (tk === "video") {
+        duration = parseFloat($("durationVideo").value);
+      } else {
+        duration = parseFloat($("durationAudio").value);
+      }
+      if (!(duration > 0)) {
+        logEl.textContent = "时长必须为正数。";
+        logEl.classList.add("err");
+        return;
+      }
+      const repeats = repeatCount();
+      if (sm === "local_file" && repeats < 1) {
+        logEl.textContent = "重复次数必须大于等于 1。";
+        logEl.classList.add("err");
+        return;
+      }
+
+      const fd = new FormData();
+      fd.append("source_mode", sm);
+      fd.append("target_kind", tk);
+      fd.append("duration", String(duration));
+      fd.append("input_repeat_count", sm === "local_file" ? String(repeats) : "1");
+      fd.append("resolution", $("resolution").value);
+      fd.append("container", $("container").value);
+      fd.append("orientation", $("orientation").value);
+      fd.append("audio_format", $("audio_format").value);
+      if (fileInput.files && fileInput.files[0]) {
+        fd.append("media_file", fileInput.files[0]);
+      }
+
+      logEl.classList.remove("err");
+      logEl.textContent = "执行中…";
+      dl.classList.add("hidden");
+      btn.disabled = true;
+
+      try {
+        const res = await fetch("/api/generate", { method: "POST", body: fd });
+        let data;
+        try {
+          data = await res.json();
+        } catch (_) {
+          throw new Error(
+            "服务器返回了无法解析的响应（HTTP " + res.status + "）。请确认仍在访问本工具页面，且服务未重启。"
+          );
+        }
+        logEl.textContent = (data.log || "") + (data.error && !data.ok ? "\n" + data.error : "");
+        if (!data.ok) logEl.classList.add("err");
+        if (data.ok && data.download_url) {
+          // 不用 download 属性：部分浏览器在「自签名 https + 同站 API」时左键会不触发，而新标签/地址栏能下。
+          // target=_blank 与「新开页访问同一 URL」一致，大文件也无需整进内存。
+          dl.removeAttribute("download");
+          dl.href = data.download_url;
+          dl.target = "_blank";
+          dl.rel = "noopener noreferrer";
+          dl.textContent = "下载：" + (data.output_filename || "文件");
+          dl.classList.remove("hidden");
+        }
+      } catch (e) {
+        logEl.classList.add("err");
+        const msg = String(e && e.message ? e.message : e);
+        const hint =
+          /Failed to fetch|NetworkError|Load failed|网络/i.test(msg)
+            ? "\n提示：这通常是浏览器网络/证书问题，不是时长本身。请优先用 https://127.0.0.1:8765 或 https://localhost:8765；若用局域网 IP，需重启服务以刷新含该 IP 的证书，并在浏览器重新「继续访问」。"
+            : "";
+        logEl.textContent = "请求失败：" + msg + hint;
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

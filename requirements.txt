@@ -1,0 +1,4 @@
+# Web UI
+Flask>=3.0,<4
+# 本地 HTTPS 自签名证书（含 127.0.0.1 / localhost SAN，Safari 可继续访问）
+cryptography>=42.0.0
