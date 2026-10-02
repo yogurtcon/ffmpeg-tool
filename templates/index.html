@@ -62,6 +62,33 @@
     }
     .grid2 label { color: var(--muted); font-size: 0.9rem; }
     #specVideo.hidden, #specAudio.hidden, #fileRow.hidden { display: none !important; }
+    #bundledSampleRow.hidden { display: none !important; }
+    .sample-picker { position: relative; display: inline-block; min-width: 280px; }
+    .sample-picker-button {
+      display: block; width: 100%; padding: 8px 34px 8px 10px; text-align: left;
+      background: #0d1117; border: 1px solid var(--border); color: var(--text);
+      border-radius: 6px; cursor: pointer; position: relative;
+    }
+    .sample-picker-button::after { content: "▾"; position: absolute; right: 10px; color: var(--muted); }
+    .sample-menu {
+      display: none; position: absolute; z-index: 5; top: calc(100% + 2px); left: 0;
+      min-width: 100%; padding: 4px; background: #0d1117; border: 1px solid var(--border);
+      border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.35);
+    }
+    .sample-picker:hover .sample-menu, .sample-picker:focus-within .sample-menu { display: block; }
+    .sample-category { position: relative; }
+    .sample-category > button, .sample-option {
+      display: block; width: 100%; padding: 8px 10px; border: 0; background: transparent;
+      color: var(--text); text-align: left; cursor: pointer; white-space: nowrap; border-radius: 4px;
+    }
+    .sample-category > button::after { content: "›"; float: right; color: var(--muted); }
+    .sample-category > button:hover, .sample-option:hover { background: var(--card); }
+    .sample-options {
+      display: none; position: absolute; left: calc(100% + 2px); top: -4px; min-width: 230px;
+      padding: 4px; background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.35);
+    }
+    .sample-category:hover .sample-options, .sample-category:focus-within .sample-options { display: block; }
     .btnRow {
       display: flex;
       align-items: center;
@@ -118,6 +145,28 @@
         <input type="radio" name="source_mode" value="local_file" /> 本地上传（支持常见音视频；是否含画面由工具自动检测）
       </label>
       <label class="row"><input type="radio" name="source_mode" value="generator" checked /> 无输入（由工具生成音/画）</label>
+      <div id="bundledSampleRow" style="margin-top:12px;">
+        <label class="row">内置测试素材
+          <span class="sample-picker" id="samplePicker">
+            <button type="button" class="sample-picker-button" id="bundledSampleLabel">不使用内置素材（默认使用单人.m4a）</button>
+            <span class="sample-menu">
+              <button type="button" class="sample-option" data-value="" data-duration="">不使用内置素材（默认使用单人.m4a）</button>
+              {% for group in sample_media %}
+              <span class="sample-category">
+                <button type="button">{{ group.category }}</button>
+                <span class="sample-options">
+                  {% for sample in group.samples %}
+                  <button type="button" class="sample-option" data-value="{{ sample.path }}" data-duration="{{ sample.duration }}">{{ sample.filename }}</button>
+                  {% endfor %}
+                </span>
+              </span>
+              {% endfor %}
+            </span>
+            <input type="hidden" id="bundledSample" name="bundled_sample" value="">
+          </span>
+        </label>
+        <div class="hint">鼠标悬停分类后选择素材；不选择时默认使用单人.m4a。时长超过素材长度时会循环素材并截断。</div>
+      </div>
       <div id="fileRow" class="hidden" style="margin-top:12px;">
         <label class="row">选择文件 <input type="file" id="mediaFile" name="media_file" /></label>
         <label class="row">
@@ -178,6 +227,9 @@
     const $ = (id) => document.getElementById(id);
     const logEl = $("log");
     const fileRow = $("fileRow");
+    const bundledSampleRow = $("bundledSampleRow");
+    const bundledSample = $("bundledSample");
+    const bundledSampleLabel = $("bundledSampleLabel");
     const specVideo = $("specVideo");
     const specAudio = $("specAudio");
     const dl = $("dl");
@@ -217,13 +269,33 @@
       const m = sourceMode();
       if (m === "generator") {
         fileRow.classList.add("hidden");
-        $("durationVideo").value = "5";
-        $("durationAudio").value = "5";
+        bundledSampleRow.classList.remove("hidden");
+        syncBundledSample();
       } else {
+        bundledSampleRow.classList.add("hidden");
         fileRow.classList.remove("hidden");
         syncRepeatHint();
       }
     }
+
+    function syncBundledSample() {
+      const option = document.querySelector('.sample-option[data-value="' + CSS.escape(bundledSample.value) + '"]');
+      const duration = parseFloat(option && option.dataset.duration);
+      if (duration > 0) {
+        setDurationValue(duration);
+      } else {
+        $("durationVideo").value = "5";
+        $("durationAudio").value = "5";
+      }
+    }
+
+    document.querySelectorAll(".sample-option").forEach((option) => {
+      option.addEventListener("click", () => {
+        bundledSample.value = option.dataset.value || "";
+        bundledSampleLabel.textContent = option.textContent;
+        syncBundledSample();
+      });
+    });
 
     function syncTargetUI() {
       const t = targetKind();
@@ -243,6 +315,7 @@
       el.addEventListener("change", syncTargetUI);
     });
     $("inputRepeatCount").addEventListener("input", syncRepeatHint);
+    bundledSample.addEventListener("change", syncBundledSample);
     $("mediaFile").addEventListener("change", () => {
       localMediaDuration = 0;
       const file = $("mediaFile").files && $("mediaFile").files[0];
@@ -298,6 +371,7 @@
 
       const fd = new FormData();
       fd.append("source_mode", sm);
+      fd.append("bundled_sample", sm === "generator" ? bundledSample.value : "");
       fd.append("target_kind", tk);
       fd.append("duration", String(duration));
       fd.append("input_repeat_count", sm === "local_file" ? String(repeats) : "1");
@@ -327,7 +401,7 @@
         logEl.textContent = (data.log || "") + (data.error && !data.ok ? "\n" + data.error : "");
         if (!data.ok) logEl.classList.add("err");
         if (data.ok && data.download_url) {
-          // 不用 download 属性：部分浏览器在「自签名 https + 同站 API」时左键会不触发，而新标签/地址栏能下。
+          // 不用 download 属性：部分浏览器对跨窗口下载的处理更稳定。
           // target=_blank 与「新开页访问同一 URL」一致，大文件也无需整进内存。
           dl.removeAttribute("download");
           dl.href = data.download_url;
@@ -341,7 +415,7 @@
         const msg = String(e && e.message ? e.message : e);
         const hint =
           /Failed to fetch|NetworkError|Load failed|网络/i.test(msg)
-            ? "\n提示：这通常是浏览器网络/证书问题，不是时长本身。请优先用 https://127.0.0.1:8765 或 https://localhost:8765；若用局域网 IP，需重启服务以刷新含该 IP 的证书，并在浏览器重新「继续访问」。"
+            ? "\n提示：请确认服务正在运行，并使用 http://目标机器IP:8765 访问。"
             : "";
         logEl.textContent = "请求失败：" + msg + hint;
       } finally {

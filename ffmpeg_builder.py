@@ -402,31 +402,23 @@ def _build_audio_output(
         ]
         return BuildResult(argv=argv, output_filename=basename)
 
-    pad = target_duration - source_duration
-    # 段1：输入音频；段2：补足生成音频；concat 前统一格式
-    # [0:a] atrim + aformat -> a0; [1:a] -> a1; concat
-    fc = (
-        f"[0:a]atrim=0:{source_duration},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:"
-        f"channel_layouts=stereo[a0];"
-        f"[1:a]asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:"
-        f"channel_layouts=stereo[a1];"
-        f"[a0][a1]concat=n=2:v=0:a=1[aout]"
-    )
-    lavfi = _default_lavfi_audio(pad)
+    # 素材不足时继续循环素材，而不是用默认生成音补齐。
     argv = [
         ffmpeg,
         "-y",
-        *local_input_args,
-        "-f",
-        "lavfi",
+        "-stream_loop",
+        "-1",
         "-i",
-        lavfi,
-        "-filter_complex",
-        fc,
-        "-map",
-        "[aout]",
+        input_path,
+        "-t",
+        str(target_duration),
+        "-vn",
         "-c:a",
         codec,
+        "-ac",
+        str(AUDIO_CHANNELS),
+        "-ar",
+        str(SAMPLE_RATE),
         *extra_a,
         *mux,
         str(out_path),
@@ -923,25 +915,19 @@ def _build_audio_to_waves_video(
         ]
         return BuildResult(argv=argv, output_filename=basename)
 
-    pad = target_duration - source_duration
     fc = (
         f"[0:a]aformat=sample_rates={SAMPLE_RATE}:channel_layouts=stereo,"
-        f"atrim=0:{source_duration},asetpts=PTS-STARTPTS[a0];"
-        f"[1:a]aformat=sample_fmts=fltp:sample_rates={SAMPLE_RATE}:"
-        f"channel_layouts=stereo,asetpts=PTS-STARTPTS[a1];"
-        f"[a0][a1]concat=n=2:v=0:a=1[am];"
+        f"atrim=0:{target_duration},asetpts=PTS-STARTPTS[am];"
         f"[am]asplit=2[aw][aout];"
         f"[aw]showwaves=s={w}x{h}:mode=line:rate={VIDEO_FPS}:colors=0xFFFFFF|0x3366FF[v]"
     )
-    lavfi_pad = _default_lavfi_audio(pad)
     argv = [
         ffmpeg,
         "-y",
-        *local_input_args,
-        "-f",
-        "lavfi",
+        "-stream_loop",
+        "-1",
         "-i",
-        lavfi_pad,
+        input_path,
         "-filter_complex",
         fc,
         "-map",

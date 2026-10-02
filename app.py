@@ -6,7 +6,7 @@ FFmpeg 测试素材生成工具 — Web 界面（Flask）。
   python3 -m pip install -r requirements.txt
   python3 app.py
 
-浏览器打开 https://127.0.0.1:8765 或 https://localhost:8765（首次自签名证书需「继续访问」）
+浏览器打开 http://127.0.0.1:8765 或 http://localhost:8765
 
 后台运行
 不要日志、避免文件变大：
@@ -20,13 +20,11 @@ FFmpeg 测试素材生成工具 — Web 界面（Flask）。
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import subprocess
 import tempfile
 import threading
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -37,9 +35,7 @@ from werkzeug.utils import secure_filename
 import ffmpeg_builder as fb
 
 BASE_DIR = Path(__file__).resolve().parent
-_DEV_SSL_DIR = BASE_DIR / ".dev_ssl"
-_DEV_CERT_PEM = _DEV_SSL_DIR / "cert.pem"
-_DEV_KEY_PEM = _DEV_SSL_DIR / "key.pem"
+SAMPLE_MEDIA_DIR = BASE_DIR / "samples"
 app = Flask(__name__)
 # 上传上限（超过时 Werkzeug 默认返回 HTML，需在 errorhandler 里改成 JSON 供前端解析）
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024 * 1024  # 10 GiB
@@ -60,6 +56,49 @@ def handle_request_entity_too_large(_e: RequestEntityTooLarge):
 # 服务器上生成的可下载文件保留时长（秒），超时按 mtime 删除，避免越积越多
 OUTPUT_RETENTION_SEC = 30 * 60
 _OUTPUT_MEDIA_SUFFIXES = frozenset({".mp4", ".mov", ".mp3", ".aac", ".m4a", ".flac", ".wav"})
+_SAMPLE_MEDIA_SUFFIXES = frozenset({".mp3", ".aac", ".m4a", ".flac", ".wav", ".mp4", ".mov"})
+
+
+def _list_sample_media() -> list[dict[str, object]]:
+    """返回可在「无输入」状态选用的内置媒体，不暴露 samples/ 外的文件。"""
+    if not SAMPLE_MEDIA_DIR.is_dir():
+        return []
+
+    grouped: dict[str, list[dict[str, str | float]]] = {}
+    for path in sorted(SAMPLE_MEDIA_DIR.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _SAMPLE_MEDIA_SUFFIXES:
+            continue
+        relative_path = path.relative_to(SAMPLE_MEDIA_DIR)
+        try:
+            duration = fb.probe_duration_seconds(str(path))
+        except Exception:  # noqa: BLE001
+            duration = 0.0
+        grouped.setdefault(str(relative_path.parent), []).append(
+            {
+                "filename": path.name,
+                "path": relative_path.as_posix(),
+                "duration": duration,
+            }
+        )
+    return [
+        {"category": category, "samples": grouped[category]}
+        for category in sorted(grouped)
+    ]
+
+
+def _resolve_sample_media_path(relative_path: str) -> Path | None:
+    """仅解析 samples/ 中允许格式的文件，防止表单参数造成路径穿越。"""
+    if not relative_path or "\\" in relative_path:
+        return None
+    root = SAMPLE_MEDIA_DIR.resolve()
+    path = (root / relative_path).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return None
+    if not path.is_file() or path.suffix.lower() not in _SAMPLE_MEDIA_SUFFIXES:
+        return None
+    return path
 
 
 def purge_stale_generated_files() -> None:
@@ -101,121 +140,6 @@ def _retention_cleanup_daemon() -> None:
     while True:
         time.sleep(300)  # 每 5 分钟扫一次
         purge_stale_generated_files()
-
-
-def _local_ipv4_addresses() -> list[ipaddress.IPv4Address]:
-    """本机非回环 IPv4（局域网访问 https://IP:8765 时需写入证书 SAN，否则浏览器易 Failed to fetch）。"""
-    found: set[ipaddress.IPv4Address] = set()
-    try:
-        import socket
-
-        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-            ip = ipaddress.IPv4Address(info[4][0])
-            if not ip.is_loopback:
-                found.add(ip)
-    except OSError:
-        pass
-    try:
-        import socket
-
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            s.connect(("8.8.8.8", 80))
-            ip = ipaddress.IPv4Address(s.getsockname()[0])
-            if not ip.is_loopback:
-                found.add(ip)
-        finally:
-            s.close()
-    except OSError:
-        pass
-    return sorted(found, key=lambda x: int(x))
-
-
-def _cert_covers_required_sans(cert_path: Path) -> bool:
-    """已有证书是否已包含 localhost / 回环 / 当前局域网 IP。"""
-    from cryptography import x509
-    from cryptography.hazmat.backends import default_backend
-
-    try:
-        cert = x509.load_pem_x509_certificate(cert_path.read_bytes(), default_backend())
-        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
-    except Exception:  # noqa: BLE001
-        return False
-    dns = set(san.get_values_for_type(x509.DNSName))
-    ips = set(san.get_values_for_type(x509.IPAddress))
-    required_dns = {"localhost"}
-    required_ips = {
-        ipaddress.IPv4Address("127.0.0.1"),
-        ipaddress.IPv6Address("::1"),
-        *_local_ipv4_addresses(),
-    }
-    return required_dns <= dns and required_ips <= ips
-
-
-def _ensure_local_dev_ssl() -> tuple[str, str]:
-    """本地开发 TLS：SAN 含 localhost、回环与本机局域网 IP（避免用 IP 访问时证书不匹配导致 Failed to fetch）。"""
-    from cryptography import x509
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-
-    if (
-        _DEV_CERT_PEM.is_file()
-        and _DEV_KEY_PEM.is_file()
-        and _cert_covers_required_sans(_DEV_CERT_PEM)
-    ):
-        return str(_DEV_CERT_PEM), str(_DEV_KEY_PEM)
-
-    _DEV_SSL_DIR.mkdir(parents=True, exist_ok=True)
-    backend = default_backend()
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048, backend=backend)
-    subject = x509.Name(
-        [
-            x509.NameAttribute(NameOID.COUNTRY_NAME, "CN"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "ffmpeg-tool dev"),
-            x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
-        ]
-    )
-    san_entries: list[x509.GeneralName] = [
-        x509.DNSName("localhost"),
-        x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
-        x509.IPAddress(ipaddress.IPv6Address("::1")),
-    ]
-    lan_ips = _local_ipv4_addresses()
-    for ip in lan_ips:
-        san_entries.append(x509.IPAddress(ip))
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(subject)
-        .issuer_name(subject)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=1))
-        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=825))
-        .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
-        .add_extension(
-            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
-            critical=False,
-        )
-        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
-        .sign(key, hashes.SHA256(), backend)
-    )
-    _DEV_CERT_PEM.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    _DEV_KEY_PEM.write_bytes(
-        key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
-    try:
-        _DEV_KEY_PEM.chmod(0o600)
-    except OSError:
-        pass
-    if lan_ips:
-        print("开发证书 SAN 已包含局域网 IP：" + ", ".join(str(ip) for ip in lan_ips))
-    return str(_DEV_CERT_PEM), str(_DEV_KEY_PEM)
 
 
 def start_retention_cleanup_background() -> None:
@@ -260,7 +184,7 @@ def _source_base_stem_for_request(source_mode: str, upload) -> str:
 
 @app.route("/")
 def index() -> str:
-    return render_template("index.html")
+    return render_template("index.html", sample_media=_list_sample_media())
 
 
 @app.route("/api/generate", methods=["POST"])
@@ -289,6 +213,7 @@ def api_generate():
         return jsonify(ok=False, log="", error="重复次数必须大于等于 1"), 400
 
     upload = request.files.get("media_file")
+    bundled_sample = request.form.get("bundled_sample", "")
     temp_path: str | None = None
     input_path: str | None = None
     log_lines: list[str] = []
@@ -317,7 +242,22 @@ def api_generate():
         else:
             input_repeat_count = 1
 
+            # “无输入”且未选择内置素材时，默认使用单人.m4a，避免再生成默认音频。
+            if not bundled_sample:
+                bundled_sample = "单人声多人声/单人.m4a"
+
         source_stem = _source_base_stem_for_request(source_mode, upload)
+        if bundled_sample:
+            if source_mode != "generator":
+                return jsonify(ok=False, log="", error="内置素材仅可在选择“无输入”时使用。"), 400
+            sample_path = _resolve_sample_media_path(bundled_sample)
+            if not sample_path:
+                return jsonify(ok=False, log="", error="选择的内置素材不存在或格式不受支持。"), 400
+            input_path = str(sample_path)
+            source_mode = "local_file"
+            source_stem = fb.sanitize_output_stem(sample_path.stem) or "内置素材"
+            log_lines.append("使用内置素材：" + bundled_sample)
+
         br = fb.build_ffmpeg_command(
             source_mode=source_mode,
             target_kind=target_kind,
@@ -383,18 +323,14 @@ def api_download(name: str):
 
 def main() -> None:
     start_retention_cleanup_background()
-    cert_file, key_file = _ensure_local_dev_ssl()
     # 0.0.0.0：局域网可用 192.168.x.x:8765；改代码后必须重启进程，否则会一直是旧的 127.0.0.1
-    print("监听 0.0.0.0:8765 — 本机 https://127.0.0.1:8765 或 https://localhost:8765")
-    print("自签名证书保存在 .dev_ssl/；Safari 若提示风险，选「显示详细信息」→「访问此网站」。")
-    print("局域网 IP 已尽量写入证书 SAN；换网段后请重启本进程以重新签发。")
+    print("监听 0.0.0.0:8765 — 本机 http://127.0.0.1:8765 或 http://localhost:8765")
     print(f"生成文件保留 {OUTPUT_RETENTION_SEC // 60} 分钟后自动从服务器删除。")
     app.run(
         host="0.0.0.0",
         port=8765,
         debug=False,
         threaded=True,
-        ssl_context=(cert_file, key_file),
     )
 
 
